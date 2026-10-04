@@ -1,0 +1,9 @@
+.git
+.env
+.venv
+.tools
+**/node_modules
+**/__pycache__
+mobile
+dermatologist-web
+Microsoft

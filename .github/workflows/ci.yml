@@ -1,0 +1,104 @@
+name: Phase 1 validation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e './backend[dev]'
+      - run: ruff check backend/app backend/migrations backend/tests worker scripts
+      - run: ruff format --check backend/app backend/migrations backend/tests worker scripts
+      - run: mypy --config-file backend/pyproject.toml backend/app
+      - run: pytest -q
+        working-directory: backend
+      - run: python -m build backend --outdir backend/dist
+
+  services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/init_env.py
+      - run: docker compose config --quiet
+      - run: docker compose up --build --wait --wait-timeout 240
+      - run: python scripts/smoke.py
+      - run: docker compose exec -T backend python -m app.platform_probe
+      - name: Clean up ephemeral CI services
+        if: always()
+        run: docker compose down --volumes
+
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --runInBand
+      - run: npm run bundle:android
+      - run: npm run bundle:ios
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - run: npm ci
+      - run: chmod +x gradlew && ./gradlew :app:assembleDebug --no-daemon
+        working-directory: mobile/android
+
+  ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          working-directory: mobile
+          bundler-cache: true
+      - run: npm ci
+      - run: bundle exec pod install --project-directory=ios
+      - run: >-
+          xcodebuild -workspace ios/DermaMobile.xcworkspace -scheme DermaMobile
+          -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build
